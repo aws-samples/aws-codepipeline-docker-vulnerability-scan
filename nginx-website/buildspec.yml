@@ -1,0 +1,41 @@
+# AWS CodeBuild buildspec.yml to build Nginx-Website Docker Image
+# Scan built Docker Image for security Vulnerabilities using CoreOS Clair and Klar (client)
+# By Vikrama Adethyaa (adethyaa@gmail.com)
+
+# Set the following variables as CodeBuild Project Environment Variables
+# ECR_REPOSITORY_URI
+# CLAIR_URL
+
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - echo Fetching ECR Login
+      - ECR_LOGIN=$(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+      - echo Logging in to Amazon ECR...
+      - $ECR_LOGIN
+      - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - echo Downloading Clair client Klar-2.1.1
+      - wget https://github.com/optiopay/klar/releases/download/v2.1.1/klar-2.1.1-linux-amd64
+      - mv ./klar-2.1.1-linux-amd64 ./klar
+      - chmod +x ./klar
+      - PASSWORD=`echo $ECR_LOGIN | cut -d' ' -f6`
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - docker build -t $ECR_REPOSITORY_URI:latest .
+      - docker tag $ECR_REPOSITORY_URI:latest $ECR_REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    commands:
+      - bash -c "if [ /"$CODEBUILD_BUILD_SUCCEEDING/" == /"0/" ]; then exit 1; fi"
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      - docker push $ECR_REPOSITORY_URI:latest
+      - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
+      - echo Running Clair scan on the Docker Image
+      - DOCKER_USER=AWS DOCKER_PASSWORD=${PASSWORD} CLAIR_ADDR=$CLAIR_URL CLAIR_OUTPUT=Critical ./klar $ECR_REPOSITORY_URI
+      - echo Writing image definitions file...
+      - printf '[{"name":"MyWebsite","imageUri":"%s"}]' $ECR_REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+artifacts:
+  files: imagedefinitions.json
